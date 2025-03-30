@@ -67,6 +67,7 @@ class Train(RunBin):
     @classmethod
     def run(cls, args):
         config = cls.build_config(args)
+        print(config)
         train(config)
 
 

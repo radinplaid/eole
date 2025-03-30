@@ -1,10 +1,12 @@
-""" Report manager utility """
+"""Report manager utility"""
 
+import math
 import time
 from datetime import datetime
 
-import eole
+from aim import Run
 
+import eole
 from eole.utils.logging import logger
 
 
@@ -18,7 +20,7 @@ def build_report_manager(config, gpu_rank):
     else:
         writer = None
 
-    report_mgr = ReportMgr(config.report_every, start_time=-1, tensorboard_writer=writer)
+    report_mgr = ReportMgr(config.report_every, config=config, start_time=-1, tensorboard_writer=writer)
     return report_mgr
 
 
@@ -94,7 +96,7 @@ class ReportMgrBase(object):
 
 
 class ReportMgr(ReportMgrBase):
-    def __init__(self, report_every, start_time=-1.0, tensorboard_writer=None):
+    def __init__(self, report_every, config, start_time=-1.0, tensorboard_writer=None):
         """
         A report manager that writes statistics on standard output as well as
         (optionally) TensorBoard
@@ -105,7 +107,27 @@ class ReportMgr(ReportMgrBase):
                 The TensorBoard Summary writer to use or None
         """
         super(ReportMgr, self).__init__(report_every, start_time)
+        
         self.tensorboard_writer = tensorboard_writer
+        self.aim_run = Run()
+        self.aim_run["hparams"] = {
+            "learning_rate": config.training.learning_rate,
+            "batch_size": config.training.batch_size,
+            "accum_count": config.training.accum_count[0],
+            "dropout": config.training.dropout[0],
+            "attention_dropout": config.training.attention_dropout[0],
+            "max_grad_norm": config.training.max_grad_norm,
+            "warmup_steps": config.training.warmup_steps,
+            "add_ffnbias": config.model.encoder.add_ffnbias,
+            "add_qkvbias": config.model.encoder.add_qkvbias,
+            "heads": config.model.encoder.heads,
+            "share_decoder_embeddings": config.model.share_decoder_embeddings,
+            "transformer_ff": config.model.decoder.transformer_ff,
+            "hidden_size": config.model.decoder.hidden_size,
+            "dec_layers": config.model.decoder.layers,
+            "enc_layers": config.model.encoder.layers
+
+        }
 
     def maybe_log_tensorboard(self, stats, prefix, learning_rate, patience, step):
         if self.tensorboard_writer is not None:
@@ -116,9 +138,23 @@ class ReportMgr(ReportMgrBase):
         See base class method `ReportMgrBase.report_training`.
         """
         report_stats.output(step, num_steps, learning_rate, self.start_time)
+        self.aim_run.track(learning_rate, name="lr", step=step, context={"subset": "train"})
+        self.aim_run.track(report_stats.n_tokens, name="n_tokens", step=step, context={"subset": "train"})
+        self.aim_run.track(report_stats.n_sents, name="n_sents", step=step, context={"subset": "train"})
+        self.aim_run.track(
+            report_stats.loss / report_stats.n_tokens, name="xent", step=step, context={"subset": "train"}
+        )
+        self.aim_run.track(
+            math.exp(min(report_stats.loss / report_stats.n_tokens, 100)),
+            name="ppl",
+            step=step,
+            context={"subset": "train"},
+        )
+        self.aim_run.track(
+            100 * (report_stats.n_correct / report_stats.n_tokens), name="acc", step=step, context={"subset": "train"}
+        )
         self.maybe_log_tensorboard(report_stats, "progress", learning_rate, patience, step)
         report_stats = eole.utils.Statistics()
-
         return report_stats
 
     def _report_step(self, lr, patience, step, valid_stats=None, train_stats=None):
@@ -138,10 +174,14 @@ class ReportMgr(ReportMgrBase):
                     train_stats.n_sents / train_stats.n_batchs,
                 )
             )
-
             self.maybe_log_tensorboard(train_stats, "train", lr, patience, step)
         if valid_stats is not None:
             self.log("Validation perplexity: %g" % valid_stats.ppl())
             self.log("Validation accuracy: %g" % valid_stats.accuracy())
-
+            self.aim_run.track(valid_stats.ppl(), name="ppl", step=step, context={"subset": "valid"})
+            self.aim_run.track(valid_stats.accuracy(), name="acc", step=step, context={"subset": "valid"})
+            if "BLEU" in valid_stats.computed_metrics:
+                self.aim_run.track(
+                    valid_stats.computed_metrics["BLEU"], name="bleu", step=step, context={"subset": "valid"}
+                )
             self.maybe_log_tensorboard(valid_stats, "valid", lr, patience, step)

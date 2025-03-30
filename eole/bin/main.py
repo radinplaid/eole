@@ -30,7 +30,7 @@ def main():
     else:
         print(parser.format_help())
         exit(1)
-
+    print(args)
     bin_cls.run(args)
 
 

@@ -43,6 +43,7 @@ setup(
         "torch-optimi",
         "uvicorn",
         "waitress",
+        "aim"
     ],
     entry_points={
         "console_scripts": [
